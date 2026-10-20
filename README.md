@@ -1,5 +1,7 @@
 # SSE Chat 流式调试台
 
+[简体中文](README.md) | [English](README.en.md)
+
 独立的本地 SSE Chat 调试工具：编辑请求或导入 curl，将接口返回的思考与回答分别逐字展示，并核对原始 SSE 事件。
 
 使用 Node.js 20 或更新版本，无第三方依赖，无需 npm install。
