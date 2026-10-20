@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+.env
+.env.*
+*.log
+coverage/
+debug-records/
+sse-debug-*.json
+publication-proof.png
