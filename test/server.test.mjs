@@ -4,7 +4,7 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { gzipSync } from 'node:zlib';
 import { createApp } from '../server.mjs';
-import { SSEParser } from '../core.mjs';
+import { SSEParser, ToolCallAccumulator } from '../core.mjs';
 
 async function serve(server, t) {
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -62,4 +62,9 @@ test('static page is served with local CSP and the demo can run through the prox
   const base = await serve(createApp(), t); const page = await fetch(base); assert.equal(page.status, 200); assert.match(page.headers.get('content-security-policy'), /default-src 'self'/); assert.match(await page.text(), /流式调试台/);
   const response = await request(base, { url: base + '/api/demo' }); const items = (await response.text()).trim().split('\n').map(JSON.parse);
   assert.equal(items[0].status, 200); assert.match(items.filter(i => i.type === 'chunk').map(i => i.text).join(''), /\[DONE\]/); assert.equal(items.at(-1).type, 'done');
+  const calls = new ToolCallAccumulator(), parser = new SSEParser(event => { if (event.hasData && event.data !== '[DONE]') calls.push(JSON.parse(event.data)); });
+  for (const item of items) if (item.type === 'chunk') parser.push(item.text);
+  assert.equal(parser.finish(), ''); assert.equal(calls.snapshot().length, 1);
+  assert.equal(calls.snapshot()[0].name, 'run_code'); assert.equal(calls.snapshot()[0].finishReason, 'tool_calls');
+  assert.deepEqual(JSON.parse(calls.snapshot()[0].arguments), { code: "print('U')" });
 });

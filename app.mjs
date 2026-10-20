@@ -1,9 +1,10 @@
-import { parseCurl, toCurl, SSEParser, extractText, redactedConfig, isSensitive, redactURL } from './core.mjs';
+import { parseCurl, toCurl, SSEParser, extractText, ToolCallAccumulator, redactedConfig, isSensitive, redactURL } from './core.mjs';
 const $ = id => document.getElementById(id);
 const initial = { method: 'POST', url: '', headers: [{ name: 'Content-Type', value: 'application/json', enabled: true }, { name: 'Authorization', value: '', enabled: true }], body: JSON.stringify({ model: 'your-model', messages: [{ role: 'user', content: '你好，请介绍一下自己。' }], stream: true }, null, 2), reasoningPath: '', answerPath: '' };
 let headerRows = [], controller, record, running = false, playbackTimer, toastTimer, startTime, clockTimer;
 let queue = [], queueIndex = 0, pendingChars = 0;
 const output = { reasoning: '', answer: '' }, charCounts = { reasoning: 0, answer: 0 };
+let toolCalls = new ToolCallAccumulator();
 const MAX_RAW = 2 * 1024 * 1024, MAX_EVENTS = 1000;
 
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 3800); }
@@ -76,7 +77,7 @@ function appendOutput(kind, text) {
 function playback() {
   clearTimeout(playbackTimer);
   const speed = Number($('speed').value);
-  if (!speed) { for (const kind of ['reasoning', 'answer']) { $(kind).textContent = output[kind]; charCounts[kind] = Array.from(output[kind]).length; $(kind + '-count').textContent = `${charCounts[kind]} 字`; scroll($(kind)); } queue = []; queueIndex = 0; pendingChars = 0; }
+  if (!speed) { for (const kind of Object.keys(output)) { $(kind).textContent = output[kind]; charCounts[kind] = Array.from(output[kind]).length; $(kind + '-count').textContent = `${charCounts[kind]} 字`; scroll($(kind)); } queue = []; queueIndex = 0; pendingChars = 0; }
   else if (queueIndex < queue.length) {
     const chunk = queue[queueIndex]; const char = String.fromCodePoint(chunk.text.codePointAt(chunk.offset)); chunk.offset += char.length; pendingChars--; appendOutput(chunk.kind, char);
     if (chunk.offset >= chunk.text.length) queueIndex++;
@@ -85,9 +86,9 @@ function playback() {
   $('pending').textContent = pendingChars ? `待展示 ${pendingChars} 字` : '';
   if (pendingChars) playbackTimer = setTimeout(playback, 1000 / Math.max(speed, 1));
 }
-function receiveText(kind, text, at) {
+function receiveText(kind, text, at, measureFirstText = true) {
   if (!text) return;
-  if (record.firstText === null) { record.firstText = at; $('metric-text').textContent = time(at); }
+  if (measureFirstText && record.firstText === null) { record.firstText = at; $('metric-text').textContent = time(at); }
   output[kind] += text;
   if (Number($('speed').value) === 0) appendOutput(kind, text);
   else { const wasEmpty = pendingChars === 0; queue.push({ kind, text, offset: 0 }); pendingChars += Array.from(text).length; if (wasEmpty) playback(); }
@@ -95,8 +96,34 @@ function receiveText(kind, text, at) {
 $('speed').onchange = playback;
 document.querySelectorAll('[data-copy]').forEach(button => button.onclick = () => copy(output[button.dataset.copy]));
 
+function renderToolCall(call, argumentsDelta = '', at = 0) {
+  $('tool-calls-section').hidden = false;
+  $('tool-calls-count').textContent = toolCalls.calls.length;
+  if (!$(call.key)) {
+    const card = document.createElement('article'); card.className = 'tool-call';
+    const heading = document.createElement('div'); heading.className = 'tool-heading';
+    const title = document.createElement('h4'); title.id = call.key + '-name';
+    const copyButton = document.createElement('button'); copyButton.className = 'text-button'; copyButton.textContent = '复制参数'; copyButton.onclick = () => copy(output[call.key]);
+    heading.append(title, copyButton);
+    const meta = document.createElement('div'); meta.className = 'tool-meta'; meta.id = call.key + '-meta';
+    const args = document.createElement('div'); args.id = call.key; args.className = 'text-output tool-arguments'; args.dataset.placeholder = '等待参数片段…';
+    const footer = document.createElement('div'); footer.className = 'card-footer';
+    const count = document.createElement('span'); count.id = call.key + '-count'; count.textContent = '0 字';
+    const state = document.createElement('span'); state.id = call.key + '-state';
+    footer.append(count, state); card.append(heading, meta, args, footer); $('tool-calls').append(card);
+    output[call.key] = ''; charCounts[call.key] = 0;
+  }
+  $(call.key + '-name').textContent = `#${call.index} · ${call.name || '未命名函数'}`;
+  $(call.key + '-meta').textContent = `${call.type || 'function'} · ID: ${call.id || '尚未返回'}`;
+  $(call.key + '-state').textContent = call.finishReason ? `参数结束 · ${call.finishReason}` : running ? '参数接收中' : record?.outcome === 'stopped' ? '已停止' : '流已结束';
+  receiveText(call.key, argumentsDelta, at, false);
+}
+$('copy-tool-calls').onclick = () => copy(JSON.stringify(toolCalls.snapshot(), null, 2));
+
 function reset() {
   clearTimeout(playbackTimer); clearInterval(clockTimer); queue = []; queueIndex = 0; pendingChars = 0;
+  for (const kind of Object.keys(output)) if (kind !== 'reasoning' && kind !== 'answer') { delete output[kind]; delete charCounts[kind]; }
+  toolCalls = new ToolCallAccumulator(); $('tool-calls').replaceChildren(); $('tool-calls-section').hidden = true; $('tool-calls-count').textContent = '0';
   for (const kind of ['reasoning', 'answer']) { output[kind] = ''; charCounts[kind] = 0; $(kind).textContent = ''; $(kind + '-count').textContent = '0 字'; }
   for (const metric of ['http', 'event', 'text', 'total']) $('metric-' + metric).textContent = '—';
   $('metric-events').textContent = '0'; $('raw-count').textContent = '0'; $('events').replaceChildren(); $('inspect-raw').textContent = ''; $('inspect-response-headers').textContent = '';
@@ -126,6 +153,9 @@ function handleEvent(event, at, config) {
       if (record.response?.status >= 200 && record.response?.status < 300) {
         const { reasoning, answer } = extractText(obj, event.event, { reasoning: config.reasoningPath, answer: config.answerPath });
         receiveText('reasoning', reasoning, at); receiveText('answer', answer, at);
+        const updates = toolCalls.push(obj);
+        for (const update of updates) renderToolCall(update.call, update.argumentsDelta, at);
+        if (updates.length) note = updates.map(({ call, argumentsDelta }) => `工具调用 #${call.index} · ${call.name || '未返回名称'} · +${Array.from(argumentsDelta).length} 字参数`).join('；');
       }
       const usage = obj.usage || obj.response?.usage || obj.message?.usage;
       if (usage) { record.usage = { ...record.usage, ...usage }; $('usage').textContent = Object.entries(record.usage).filter(([,v]) => typeof v === 'number').map(([k,v]) => `${k}: ${v}`).join(' · ') || '已收到用量信息'; }
@@ -181,12 +211,12 @@ async function send(config) {
     if (incomplete) { addEvent({ event: 'incomplete', data: '', raw: incomplete, hasData: false }, lastAt, '末尾事件缺少空行，未作为完整 SSE 事件解析'); message('流已关闭，但最后一个 SSE 事件不完整，请核对原始事件。', true); }
     const failed = record.apiError || incomplete || record.response?.status >= 300 || record.response?.status < 200;
     record.outcome = failed ? 'error' : 'complete'; status(failed ? '响应异常' : '接收完成', failed ? 'error' : '');
-    if (isSSE && !output.reasoning && !output.answer && !failed) message('已收到流，但没有识别到文本。请在原始事件中确认字段，并在「解析 / 设置」配置增量字段路径。');
+    if (isSSE && !output.reasoning && !output.answer && !toolCalls.calls.length && !failed) message('已收到流，但没有识别到文本。请在原始事件中确认字段，并在「解析 / 设置」配置增量字段路径。');
   } catch (e) {
     controller.abort(); record.duration = performance.now() - startTime;
     if (e.name === 'AbortError') { record.outcome = 'stopped'; status('已停止'); message('请求已停止；已接收的文本将继续逐字显示。'); }
     else { record.outcome = 'error'; record.error = e.message; status('请求失败', 'error'); message(e.message, true); }
-  } finally { clearInterval(clockTimer); $('metric-total').textContent = time(record.duration); setRunning(false); controller = null; }
+  } finally { clearInterval(clockTimer); $('metric-total').textContent = time(record.duration); setRunning(false); for (const call of toolCalls.snapshot()) renderToolCall(call); controller = null; }
 }
 $('send').onclick = () => send(getConfig()); $('stop').onclick = () => controller?.abort();
 document.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !document.querySelector('dialog[open]')) { event.preventDefault(); send(getConfig()); } });
@@ -197,7 +227,7 @@ $('demo').onclick = () => {
 $('export-record').onclick = () => {
   if (!record) { toast('请先发送请求'); return; }
   const headers = Object.fromEntries(Object.entries(record.response?.headers || {}).map(([k,v]) => [k, isSensitive(k) ? '[REDACTED]' : v]));
-  const data = { ...record, response: record.response ? { ...record.response, headers } : null, output: { ...output }, note: '不包含请求 Headers / Body；原始响应及模型输出可能包含业务数据。事件最多保留末尾 1000 条，原始响应最多保留前 2 MB，截断见标记。' };
+  const data = { ...record, response: record.response ? { ...record.response, headers } : null, output: { reasoning: output.reasoning, answer: output.answer }, toolCalls: toolCalls.snapshot(), note: '不包含请求 Headers / Body；原始响应及模型输出可能包含业务数据。事件最多保留末尾 1000 条，原始响应最多保留前 2 MB，截断见标记。' };
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = `sse-debug-${new Date().toISOString().replace(/[:.]/g,'-')}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast('记录已导出，原始响应可能包含业务数据');
 };

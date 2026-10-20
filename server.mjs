@@ -81,6 +81,13 @@ function demo(req, res) {
   const packets = [': connected\r\n\r\n'];
   for (const text of ['先检查请求参数。', '然后将思考与回答分开显示。', '中文与 emoji 🧪 也能正确流式解码。']) packets.push(`data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: text } }] })}\r\n\r\n`);
   for (const text of ['你好！', '\n这是 SSE 流式调试示例。', '\n你可以粘贴 curl，或在左侧编辑 URL、Headers 和 Body。', '\n每个事件都可以在「原始事件」中核对。']) packets.push(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+  const toolChunks = [
+    { index: 0, id: 'demo_call_0', type: 'function', function: { name: 'run_code', arguments: '{"code":"print(\'' } },
+    { index: 0, id: '', type: 'function', function: { arguments: "U')", valid: true }, valid: true },
+    { index: 0, id: '', function: { arguments: '"}' } }
+  ];
+  for (const call of toolChunks) packets.push(`data:${JSON.stringify({ choices: [{ index: 0, delta: { content: '', tool_calls: [call] }, finish_reason: null }], usage: null, valid: true })}\n\n`);
+  packets.push(`data:${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })}\n\n`);
   packets.push(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 28, completion_tokens: 64, total_tokens: 92 } })}\n\n`, 'data: [DONE]\n\n');
   // Deliberately fragment events and UTF-8 bytes to exercise the real parser path.
   const bytes = Buffer.from(packets.join('')); let offset = 0;

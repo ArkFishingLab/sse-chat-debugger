@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCurl, toCurl, SSEParser, extractText, redactedConfig } from '../core.mjs';
+import { parseCurl, toCurl, SSEParser, extractText, ToolCallAccumulator, redactedConfig } from '../core.mjs';
 
 test('curl import / export preserves JSON, quotes, multiline strings, headers and method', () => {
   const config = { url: 'https://example.com/chat?q=a&b=c', method: 'POST', headers: [{ name: 'Authorization', value: "Bearer don't-$HOME-`test`", enabled: true }, { name: 'Content-Type', value: 'application/json', enabled: true }], body: JSON.stringify({ prompt: "你好\nI'm here 🧪", stream: true }) };
@@ -40,4 +40,45 @@ test('saved configs redact common credentials without mutating the active reques
   const saved = redactedConfig(config);
   assert.ok(!saved.url.includes('secret')); assert.equal(saved.headers[0].value, '[REDACTED]'); assert.equal(JSON.parse(saved.body).nested.api_key, '[REDACTED]'); assert.equal(config.headers[0].value, 'Bearer real');
   assert.equal(redactedConfig({ ...config, body: 'raw-secret' }).body, '');
+});
+
+test('GLM tool-call SSE without a space after data: preserves empty-ID argument fragments', () => {
+  const payload = { id: 'chatcmpl-test', choices: [{ delta: { content: '', tool_calls: [{ index: 0, id: '', function: { arguments: "U')", valid: true }, type: 'function', valid: true }], valid: true }, finish_reason: null, index: 0, logprobs: null, valid: true }], created: 1792489017, model: 'glm-5.2', object: 'chat.completion.chunk', usage: null, valid: true };
+  const wire = `data:${JSON.stringify(payload)}\n\n`;
+  for (let split = 0; split <= wire.length; split++) {
+    const calls = new ToolCallAccumulator();
+    const parser = new SSEParser(event => calls.push(JSON.parse(event.data)));
+    parser.push(wire.slice(0, split)); parser.push(wire.slice(split));
+    assert.equal(parser.finish(), '');
+    assert.deepEqual(calls.snapshot(), [{ key: 'tool-0', index: 0, id: '', type: 'function', name: '', arguments: "U')", finishReason: null }]);
+  }
+});
+test('tool names and JSON arguments accumulate across empty-ID chunks without changing chat text', () => {
+  const calls = new ToolCallAccumulator();
+  const chunk = (delta, finish_reason = null) => ({ choices: [{ index: 0, delta, finish_reason }] });
+  calls.push(chunk({ tool_calls: [{ index: 0, id: 'call_0', type: 'function', function: { name: 'run_', arguments: '{"code":"print(\'' } }] }));
+  const obj = chunk({ content: '同时返回文本', reasoning_content: '思考', tool_calls: [{ index: 0, id: '', function: { name: 'code', arguments: "U')" } }] });
+  assert.deepEqual(extractText(obj), { reasoning: '思考', answer: '同时返回文本' });
+  const updates = calls.push(obj); assert.equal(updates[0].argumentsDelta, "U')");
+  calls.push(chunk({ tool_calls: [{ index: 0, function: { arguments: '"}' } }] }));
+  const finished = calls.push(chunk({}, 'tool_calls'));
+  assert.equal(finished[0].argumentsDelta, '');
+  assert.deepEqual(calls.snapshot()[0], { key: 'tool-0', index: 0, id: 'call_0', type: 'function', name: 'run_code', arguments: '{"code":"print(\'U\')"}', finishReason: 'tool_calls' });
+  assert.deepEqual(JSON.parse(calls.snapshot()[0].arguments), { code: "print('U')" });
+});
+test('parallel tool calls stay separate, preserve a late ID, and ignore other choices', () => {
+  const calls = new ToolCallAccumulator();
+  calls.push({ choices: [{ index: 1, delta: { tool_calls: [{ index: 0, function: { arguments: 'ignored' } }] } }] });
+  assert.equal(calls.snapshot().length, 0);
+  calls.push({ choices: [{ index: 0, delta: { tool_calls: [{ index: 1, function: { name: 'second', arguments: 'B' } }, { index: 0, id: 'first', function: { name: 'first', arguments: 'A' } }] } }] });
+  calls.push({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: '', function: { arguments: '1' } }, { index: 1, id: 'second', function: { arguments: '2' } }] } }] });
+  assert.deepEqual(calls.snapshot().map(call => [call.index, call.id, call.arguments]), [[1, 'second', 'B2'], [0, 'first', 'A1']]);
+  calls.push({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
+  assert.ok(calls.snapshot().every(call => call.finishReason === 'tool_calls'));
+});
+test('a new call ID at a reused index starts a separate call and snapshots are isolated', () => {
+  const calls = new ToolCallAccumulator();
+  for (const id of ['first', 'second']) calls.push({ choices: [{ delta: { tool_calls: [{ index: 0, id, function: { name: 'fn', arguments: id } }] } }] });
+  const snapshot = calls.snapshot(); assert.equal(snapshot.length, 2); assert.equal(snapshot[0].arguments, 'first'); assert.equal(snapshot[1].arguments, 'second');
+  snapshot[1].arguments = 'changed'; assert.equal(calls.snapshot()[1].arguments, 'second');
 });

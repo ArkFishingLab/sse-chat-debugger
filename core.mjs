@@ -129,6 +129,45 @@ export function extractText(obj, event = '', mapping = {}) {
   return { reasoning: textValue(obj.reasoning_content), answer: textValue(obj.content) };
 }
 
+// Tool arguments are arbitrary string fragments, not necessarily valid JSON yet.
+// Continuations commonly omit the ID and function name; index identifies the call.
+export class ToolCallAccumulator {
+  constructor() { this.calls = []; this.active = new Map(); }
+  push(obj) {
+    const choice = obj.choices?.find(item => item.index === undefined || item.index === 0);
+    if (!choice) return [];
+    const updates = new Map();
+    const touch = call => {
+      if (!updates.has(call.key)) updates.set(call.key, { call, argumentsDelta: '' });
+      return updates.get(call.key);
+    };
+    const deltas = choice.delta?.tool_calls;
+    if (Array.isArray(deltas)) deltas.forEach((delta, position) => {
+      if (!delta || typeof delta !== 'object') return;
+      const index = Number.isInteger(delta.index) && delta.index >= 0 ? delta.index : position;
+      const id = typeof delta.id === 'string' ? delta.id : '';
+      let call = this.active.get(index);
+      if (!call || (id && call.id && call.id !== id) || (call.finishReason && (id || delta.function?.name))) {
+        call = { key: `tool-${this.calls.length}`, index, id: '', type: '', name: '', arguments: '', finishReason: null };
+        this.calls.push(call); this.active.set(index, call);
+      }
+      if (id) call.id = id;
+      if (typeof delta.type === 'string' && delta.type) call.type = delta.type;
+      if (typeof delta.function?.name === 'string') call.name += delta.function.name;
+      const argumentsDelta = typeof delta.function?.arguments === 'string' ? delta.function.arguments : '';
+      call.arguments += argumentsDelta;
+      touch(call).argumentsDelta += argumentsDelta;
+    });
+    if (typeof choice.finish_reason === 'string' && choice.finish_reason) {
+      for (const call of this.active.values()) {
+        if (!call.finishReason) { call.finishReason = choice.finish_reason; touch(call); }
+      }
+    }
+    return [...updates.values()].map(update => ({ ...update, call: { ...update.call } }));
+  }
+  snapshot() { return this.calls.map(call => ({ ...call })); }
+}
+
 export const isSensitive = name => /authorization|cookie|token|secret|password|passwd|api[-_]?key|credential/i.test(name);
 export function redactURL(value) {
   try { const url = new URL(value); url.username = ''; url.password = ''; for (const key of url.searchParams.keys()) if (isSensitive(key)) url.searchParams.set(key, '[REDACTED]'); return url.href; } catch { return value; }
