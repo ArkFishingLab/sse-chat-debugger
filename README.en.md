@@ -24,9 +24,11 @@ The web interface currently uses Chinese labels. The corresponding labels are in
 4. Click **Send request (发送请求)**. Reasoning and answers appear in separate panels. Choose a character-by-character playback speed or show incoming text immediately. Request timing is measured independently of the playback animation.
    - When a tool call arrives, the **Tool calls (工具调用)** section appears automatically. Arguments stream into separate panels for each call, with controls to copy individual arguments or all calls.
 5. Expand individual events in **Raw events (原始事件)**, or inspect **Raw response (原始响应)** and **Response headers (响应头)**. You can stop the request, copy the output, or export a JSON debugging record.
-6. Save redacted request profiles in your current browser if needed, then fill in credentials when loading them again. Requests and history are not saved automatically.
+6. Click **Save (保存)** to write complete request profiles to `data/requests.json` in the tool directory. URLs, headers, bodies, and parsing settings are preserved, including tokens, cookies, and non-JSON bodies. Requests and history are not saved automatically.
 
-**Copy curl (复制 curl)** includes the currently enabled headers, body, and credentials so you can reproduce the request locally. Saved profiles redact common sensitive headers and URL query parameters, including Authorization, Cookie, Token, and API Key fields. Matching fields in JSON bodies are redacted recursively; non-JSON bodies are not saved. Review any custom sensitive business fields yourself. Clearing the site's browser data removes all saved profiles.
+**Copy curl (复制 curl)** includes the currently enabled headers, body, and credentials so you can reproduce the request locally. Saved profiles are stored as plaintext without redaction. Changing ports or browsers, or restarting the server, retains access to the same profiles when using the same tool directory. The file is readable and writable only by the current user on supported platforms, and `data/` is excluded from Git. Copy `data/requests.json` to back up or move your profiles. The file is not served as a static web asset.
+
+Legacy browser profiles are automatically imported when you visit their original browser and address. The browser copy is retained as a backup. Previously redacted fields cannot be recovered: fill them in and save again. Imports do not overwrite existing local profiles.
 
 ## Response parsing
 
@@ -56,11 +58,12 @@ The SSE parser handles UTF-8, events split across network chunks, CR/LF/CRLF lin
 npm test
 ```
 
-Tests cover curl import/export round trips, SSE chunk boundaries, protocol mappings, fragmented tool arguments, parallel calls, credential redaction, and real local HTTP proxy behavior, including compressed responses, waiting without a request deadline, cancellation, redirects, and errors.
+Tests cover curl import/export round trips, SSE chunk boundaries, protocol mappings, fragmented tool arguments, parallel calls, full-fidelity file storage, access across ports, legacy imports, protection of damaged files, and real local HTTP proxy behavior, including compressed responses, waiting without a request deadline, cancellation, redirects, and errors.
 
 Project files:
 
 - `server.mjs`: Local proxy and demo endpoint.
+- `profiles.mjs`: Local request profile storage.
 - `core.mjs`: Protocol parsing.
 - `app.mjs`: Browser interactions.
 - `index.html` / `style.css`: Web interface.

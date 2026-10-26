@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { getProfileStore, ProfileError } from './profiles.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const MAX_REQUEST = 2 * 1024 * 1024;
@@ -95,7 +96,8 @@ function demo(req, res) {
   res.on('close', () => clearInterval(timer));
 }
 
-export function createApp() {
+export function createApp({ profilesFile = resolve(root, 'data/requests.json') } = {}) {
+  const profiles = getProfileStore(profilesFile);
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -105,6 +107,15 @@ export function createApp() {
     if (req.headers.origin && req.headers.origin !== `http://${host}`) { json(res, 403, { error: '不允许跨站请求' }); return; }
     const pathname = new URL(req.url, `http://${host}`).pathname;
     try {
+      if (req.method === 'GET' && pathname === '/api/profiles') return json(res, 200, { profiles: await profiles.list(), storagePath: profiles.file });
+      if (req.method === 'POST' && (pathname === '/api/profiles' || pathname === '/api/profiles/import')) {
+        let body;
+        try { body = await readJSON(req); } catch { throw new ProfileError('请求配置不是有效 JSON，或超过 2 MB'); }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) throw new ProfileError('请求配置格式不正确');
+        const result = pathname.endsWith('/import') ? await profiles.import(body.profiles) : await profiles.save(body.name, body.config);
+        return json(res, 200, { ...result, storagePath: profiles.file });
+      }
+      if (req.method === 'DELETE' && pathname.startsWith('/api/profiles/')) return json(res, 200, { ...await profiles.remove(decodeURIComponent(pathname.slice('/api/profiles/'.length))), storagePath: profiles.file });
       if (req.method === 'POST' && pathname === '/api/stream') return await proxy(req, res);
       if (req.method === 'POST' && pathname === '/api/demo') return demo(req, res);
       if (req.method === 'GET' && assets[pathname]) {
@@ -114,7 +125,7 @@ export function createApp() {
       }
       if (pathname === '/favicon.ico') { res.writeHead(204); res.end(); return; }
       json(res, 404, { error: 'Not found' });
-    } catch (e) { if (!res.headersSent) json(res, 500, { error: e.message }); else res.end(); }
+    } catch (e) { if (!res.headersSent) json(res, e instanceof ProfileError ? e.status : 500, { error: e.message }); else res.end(); }
   });
 }
 

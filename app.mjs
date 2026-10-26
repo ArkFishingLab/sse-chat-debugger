@@ -1,4 +1,4 @@
-import { parseCurl, toCurl, SSEParser, extractText, ToolCallAccumulator, redactedConfig, isSensitive, redactURL } from './core.mjs';
+import { parseCurl, toCurl, SSEParser, extractText, ToolCallAccumulator, isSensitive, redactURL } from './core.mjs';
 const $ = id => document.getElementById(id);
 const initial = { method: 'POST', url: '', headers: [{ name: 'Content-Type', value: 'application/json', enabled: true }, { name: 'Authorization', value: '', enabled: true }], body: JSON.stringify({ model: 'your-model', messages: [{ role: 'user', content: '你好，请介绍一下自己。' }], stream: true }, null, 2), reasoningPath: '', answerPath: '' };
 let headerRows = [], controller, record, running = false, playbackTimer, toastTimer, startTime, clockTimer;
@@ -52,20 +52,49 @@ $('confirm-import').onclick = () => {
 $('export-curl').onclick = () => copy(toCurl(getConfig()));
 
 const PROFILE_KEY = 'sse-chat-debugger.profiles.v1';
-function profiles() { try { const list = JSON.parse(localStorage.getItem(PROFILE_KEY) || '[]'); return Array.isArray(list) ? list : []; } catch { return []; } }
+const MIGRATED_KEY = 'sse-chat-debugger.profiles.file-migrated.v1';
+let savedProfiles = [];
+async function profileAPI(path = '', options = {}) {
+  const response = await fetch('/api/profiles' + path, options);
+  const result = await response.json();
+  if (!response.ok) throw Error(result.error || `保存服务 HTTP ${response.status}`);
+  savedProfiles = result.profiles;
+  $('storage-location').textContent = `本地文件：${result.storagePath}`;
+  return result;
+}
 function refreshProfiles(selected = '') {
   $('profiles').replaceChildren(new Option('选择已保存的请求…', ''));
-  for (const item of profiles()) $('profiles').append(new Option(item.name, item.id));
+  for (const item of savedProfiles) $('profiles').append(new Option(item.name, item.id));
   $('profiles').value = selected;
+}
+async function loadProfiles() {
+  try {
+    await profileAPI();
+    let legacy = [];
+    try { if (!localStorage.getItem(MIGRATED_KEY)) legacy = JSON.parse(localStorage.getItem(PROFILE_KEY) || '[]'); } catch {}
+    if (Array.isArray(legacy) && legacy.length) {
+      const result = await profileAPI('/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profiles: legacy }) });
+      try { localStorage.setItem(MIGRATED_KEY, '1'); } catch {}
+      if (result.imported) toast('旧收藏已迁移到本地文件；此前已脱敏的字段需重新填写一次');
+    }
+  } catch (e) { toast(`读取已保存请求失败：${e.message}`); }
+  finally { refreshProfiles(); $('save-profile').disabled = false; $('profiles').disabled = false; $('delete-profile').disabled = false; }
 }
 $('save-profile').onclick = () => { $('profile-name').value = ''; $('save-dialog').showModal(); $('profile-name').focus(); };
 $('close-save').onclick = () => $('save-dialog').close();
-$('save-form').onsubmit = event => {
+$('save-form').onsubmit = async event => {
   event.preventDefault(); const name = $('profile-name').value.trim(); if (!name) return;
-  try { const list = profiles(), id = crypto.randomUUID(); list.push({ id, name, config: redactedConfig(getConfig()) }); localStorage.setItem(PROFILE_KEY, JSON.stringify(list)); refreshProfiles(id); $('save-dialog').close(); toast('已保存脱敏配置；使用时请补全凭据'); } catch (e) { toast(`保存失败：${e.message}`); }
+  const button = $('save-form').querySelector('[type="submit"]'); button.disabled = true;
+  try { const result = await profileAPI('', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, config: getConfig() }) }); refreshProfiles(result.profile.id); $('save-dialog').close(); toast('完整请求已保存到本地文件'); }
+  catch (e) { toast(`保存失败：${e.message}`); }
+  finally { button.disabled = false; }
 };
-$('profiles').onchange = () => { const item = profiles().find(p => p.id === $('profiles').value); if (item) { applyConfig(item.config); toast('已加载配置，请补全已脱敏的凭据'); } };
-$('delete-profile').onclick = () => { if (!$('profiles').value) return; try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profiles().filter(p => p.id !== $('profiles').value))); refreshProfiles(); toast('配置已删除'); } catch (e) { toast(e.message); } };
+$('profiles').onchange = async () => {
+  const id = $('profiles').value; if (!id) return;
+  try { await profileAPI(); refreshProfiles(id); const item = savedProfiles.find(p => p.id === id); if (item) { applyConfig(item.config); toast('已加载本地配置'); } else toast('该配置已被删除'); }
+  catch (e) { toast(`加载失败：${e.message}`); }
+};
+$('delete-profile').onclick = async () => { const id = $('profiles').value; if (!id) return; $('delete-profile').disabled = true; try { await profileAPI('/' + encodeURIComponent(id), { method: 'DELETE' }); refreshProfiles(); toast('本地配置已删除'); } catch (e) { toast(e.message); } finally { $('delete-profile').disabled = false; } };
 
 function scroll(element) { if ($('autoscroll').checked) element.scrollTop = element.scrollHeight; }
 function appendOutput(kind, text) {
@@ -231,4 +260,4 @@ $('export-record').onclick = () => {
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = `sse-debug-${new Date().toISOString().replace(/[:.]/g,'-')}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast('记录已导出，原始响应可能包含业务数据');
 };
-applyConfig(initial); refreshProfiles();
+applyConfig(initial); loadProfiles();

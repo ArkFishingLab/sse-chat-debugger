@@ -7,3 +7,4 @@ coverage/
 debug-records/
 sse-debug-*.json
 publication-proof.png
+data/

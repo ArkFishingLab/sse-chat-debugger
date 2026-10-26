@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCurl, toCurl, SSEParser, extractText, ToolCallAccumulator, redactedConfig } from '../core.mjs';
+import { parseCurl, toCurl, SSEParser, extractText, ToolCallAccumulator, redactURL } from '../core.mjs';
 
 test('curl import / export preserves JSON, quotes, multiline strings, headers and method', () => {
   const config = { url: 'https://example.com/chat?q=a&b=c', method: 'POST', headers: [{ name: 'Authorization', value: "Bearer don't-$HOME-`test`", enabled: true }, { name: 'Content-Type', value: 'application/json', enabled: true }], body: JSON.stringify({ prompt: "你好\nI'm here 🧪", stream: true }) };
@@ -35,11 +35,12 @@ test('extract common chat protocols and custom paths without duplicating final s
   assert.equal(extractText({ type: 'response.completed', response: { output: [{ content: [{ text: 'snapshot' }] }] } }).answer, '');
   assert.deepEqual(extractText({ data: { thinking: '想', text: '答' } }, '', { reasoning: 'data.thinking', answer: 'data.text' }), { reasoning: '想', answer: '答' });
 });
-test('saved configs redact common credentials without mutating the active request', () => {
-  const config = { url: 'https://user:pw@example.com/?access_token=secret', headers: [{ name: 'Authorization', value: 'Bearer real', enabled: true }], body: '{"nested":{"api_key":"secret"},"messages":[{"content":"你好"}]}' };
-  const saved = redactedConfig(config);
-  assert.ok(!saved.url.includes('secret')); assert.equal(saved.headers[0].value, '[REDACTED]'); assert.equal(JSON.parse(saved.body).nested.api_key, '[REDACTED]'); assert.equal(config.headers[0].value, 'Bearer real');
-  assert.equal(redactedConfig({ ...config, body: 'raw-secret' }).body, '');
+test('debug record URLs still redact credentials without changing the active URL', () => {
+  const url = 'https://user:pw@example.com/?access_token=secret&q=hello';
+  const result = new URL(redactURL(url));
+  assert.equal(result.username, ''); assert.equal(result.password, '');
+  assert.equal(result.searchParams.get('access_token'), '[REDACTED]'); assert.equal(result.searchParams.get('q'), 'hello');
+  assert.ok(url.includes('secret'));
 });
 
 test('GLM tool-call SSE without a space after data: preserves empty-ID argument fragments', () => {

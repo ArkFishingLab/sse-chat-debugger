@@ -172,13 +172,3 @@ export const isSensitive = name => /authorization|cookie|token|secret|password|p
 export function redactURL(value) {
   try { const url = new URL(value); url.username = ''; url.password = ''; for (const key of url.searchParams.keys()) if (isSensitive(key)) url.searchParams.set(key, '[REDACTED]'); return url.href; } catch { return value; }
 }
-export function redactedConfig(config) {
-  const walk = object => {
-    if (Array.isArray(object)) return object.map(walk);
-    if (object && typeof object === 'object') return Object.fromEntries(Object.entries(object).map(([k, v]) => [k, isSensitive(k) ? '[REDACTED]' : walk(v)]));
-    return object;
-  };
-  let body = config.body;
-  try { body = JSON.stringify(walk(JSON.parse(body)), null, 2); } catch { body = ''; }
-  return { ...config, url: redactURL(config.url), body, headers: config.headers.map(h => ({ ...h, value: isSensitive(h.name) ? '[REDACTED]' : h.value })) };
-}
