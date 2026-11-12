@@ -1,3 +1,5 @@
+import { appendAnswer, runRepeated, validateCount } from './workflows.mjs';
+import { renderJSONView } from './json-view.mjs';
 import { parseCurl, toCurl, SSEParser, extractText, ToolCallAccumulator, isSensitive, redactURL } from './core.mjs';
 const $ = id => document.getElementById(id);
 const initial = { method: 'POST', url: '', headers: [{ name: 'Content-Type', value: 'application/json', enabled: true }, { name: 'Authorization', value: '', enabled: true }], body: JSON.stringify({ model: 'your-model', messages: [{ role: 'user', content: '你好，请介绍一下自己。' }], stream: true }, null, 2), reasoningPath: '', answerPath: '' };
@@ -5,6 +7,8 @@ let headerRows = [], controller, record, running = false, playbackTimer, toastTi
 let queue = [], queueIndex = 0, pendingChars = 0;
 const output = { reasoning: '', answer: '' }, charCounts = { reasoning: 0, answer: 0 };
 let toolCalls = new ToolCallAccumulator();
+let batchController = null, runSequence = 0, selectedRun = null;
+const runs = [];
 const MAX_RAW = 2 * 1024 * 1024, MAX_EVENTS = 1000;
 
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 3800); }
@@ -34,7 +38,7 @@ function applyConfig(config) {
   if (![...$('method').options].some(option => option.value === config.method)) $('method').append(new Option(config.method, config.method));
   $('method').value = config.method; $('url').value = config.url; $('body').value = config.body || '';
   $('reasoning-path').value = config.reasoningPath || ''; $('answer-path').value = config.answerPath || '';
-  headerRows = config.headers.map(h => ({ ...h })); renderHeaders();
+  headerRows = config.headers.map(h => ({ ...h })); renderHeaders(); if (!$('json-view').hidden) showJSON();
 }
 function tabGroup(selector, attr, prefix) {
   document.querySelectorAll(selector).forEach(button => button.onclick = () => {
@@ -43,7 +47,21 @@ function tabGroup(selector, attr, prefix) {
 }
 tabGroup('[data-editor]', 'editor', 'editor-'); tabGroup('[data-inspect]', 'inspect', 'inspect-');
 $('add-header').onclick = () => { headerRows.push({ name: '', value: '', enabled: true }); renderHeaders(); };
-$('format-body').onclick = () => { try { $('body').value = JSON.stringify(JSON.parse($('body').value), null, 2); toast('JSON 已格式化'); } catch (e) { toast(`JSON 无效：${e.message}`); } };
+$('format-body').onclick = () => { try { $('body').value = JSON.stringify(JSON.parse($('body').value), null, 2); if (!$('json-view').hidden) showJSON(); toast('JSON 已格式化'); } catch (e) { toast(`JSON 无效：${e.message}`); } };
+function showJSON() {
+  $('body').hidden = true; $('json-view').hidden = false; $('json-tree-tools').hidden = false;
+  $('body-raw').setAttribute('aria-pressed', 'false'); $('body-tree').setAttribute('aria-pressed', 'true');
+  try { renderJSONView($('json-view'), JSON.parse($('body').value)); $('json-state').textContent = '只读 JSON 视图；点击节点折叠 / 展开，切换原文可编辑。'; }
+  catch (e) { $('json-view').textContent = `无法查看 JSON：${e.message}`; $('json-state').textContent = '请切换原文修正 JSON；原始内容已保留。'; }
+}
+$('body-tree').onclick = showJSON;
+$('body-raw').onclick = () => { $('body').hidden = false; $('json-view').hidden = true; $('json-tree-tools').hidden = true; $('body-raw').setAttribute('aria-pressed', 'true'); $('body-tree').setAttribute('aria-pressed', 'false'); $('json-state').textContent = '支持 JSON 或原始文本；按原文发送，不自动添加 stream 参数。'; };
+$('json-collapse').onclick = () => $('json-view').querySelectorAll('details').forEach(node => node.open = false);
+$('json-expand').onclick = () => {
+  let count = 0;
+  function expand(container) { for (const child of [...container.children]) { if (++count > 5000) return; if (child.tagName === 'DETAILS') child.expandJSON(); expand(child); } }
+  expand($('json-view')); if (count > 5000) toast('内容较多，剩余节点请逐级展开');
+};
 $('import').onclick = () => { $('curl-error').textContent = ''; $('curl-dialog').showModal(); $('curl-input').focus(); };
 $('confirm-import').onclick = () => {
   try { const config = parseCurl($('curl-input').value); applyConfig(config); $('curl-dialog').close(); $('curl-input').value = ''; message(config.warnings.join('\n')); toast('curl 已导入，可继续编辑后发送'); }
@@ -83,7 +101,7 @@ async function loadProfiles() {
 $('save-profile').onclick = () => { $('profile-name').value = ''; $('save-dialog').showModal(); $('profile-name').focus(); };
 $('close-save').onclick = () => $('save-dialog').close();
 $('save-form').onsubmit = async event => {
-  event.preventDefault(); const name = $('profile-name').value.trim(); if (!name) return;
+  event.preventDefault(); const name = $('profile-name').value.trim(); if (!name) { toast('请输入配置名称'); $('profile-name').focus(); return; }
   const button = $('save-form').querySelector('[type="submit"]'); button.disabled = true;
   try { const result = await profileAPI('', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, config: getConfig() }) }); refreshProfiles(result.profile.id); $('save-dialog').close(); toast('完整请求已保存到本地文件'); }
   catch (e) { toast(`保存失败：${e.message}`); }
@@ -158,12 +176,16 @@ function reset() {
   $('metric-events').textContent = '0'; $('raw-count').textContent = '0'; $('events').replaceChildren(); $('inspect-raw').textContent = ''; $('inspect-response-headers').textContent = '';
   $('connection-info').textContent = '连接尚未建立'; $('usage').textContent = '等待用量信息'; $('pending').textContent = ''; message(''); status('等待请求'); record = null;
 }
-$('clear').onclick = () => { if (running) return; reset(); };
+$('clear').onclick = () => { if (running || batchController) return; reset(); runs.length = 0; selectedRun = null; renderRuns(); $('batch-status').textContent = '尚未执行'; updateControls(); };
 
 function addEvent(event, at, note = '') {
   record.eventCount++; $('metric-events').textContent = record.eventCount; $('raw-count').textContent = record.eventCount;
   if (event.hasData && record.firstEvent === null) { record.firstEvent = at; $('metric-event').textContent = time(at); }
   const entry = { ...event, at, note }; record.events.push(entry); if (record.events.length > MAX_EVENTS) { record.events.shift(); record.eventsTruncated = true; }
+  renderEvent(entry);
+}
+function renderEvent(event) {
+  const { at, note } = event;
   const details = document.createElement('details'), summary = document.createElement('summary');
   for (const [cls, text] of [['event-time', time(at)], ['event-tag', event.hasData ? event.event : 'heartbeat'], ['event-preview', note || event.data || event.raw]]) { const span = document.createElement('span'); span.className = cls; span.textContent = text; summary.append(span); }
   const pre = document.createElement('pre'); pre.textContent = event.raw + (note ? `\n\n[解析] ${note}` : ''); details.append(summary, pre); $('events').append(details);
@@ -199,7 +221,58 @@ function appendRaw(text) {
   if (available > 0) { const kept = text.slice(0, available); record.raw += kept; $('inspect-raw').append(document.createTextNode(kept)); scroll($('inspect-raw')); }
   if (text.length > available && !record.rawTruncated) { record.rawTruncated = true; $('inspect-raw').append(document.createTextNode('\n[原始响应超过 2 MB，仅保留前 2 MB；文本解析继续]')); }
 }
-function setRunning(value) { running = value; $('send').disabled = value; $('stop').disabled = !value; $('clear').disabled = value; $('demo').disabled = value; }
+function updateControls() {
+  const busy = running || !!batchController;
+  for (const id of ['send', 'clear', 'demo', 'repeat-count']) $(id).disabled = busy;
+  $('stop').disabled = !busy;
+  $('continue').disabled = busy || !selectedRun || selectedRun.record.outcome !== 'complete' || !selectedRun.output.answer.trim();
+  $('runs').querySelectorAll('button').forEach(button => button.disabled = busy);
+}
+function setRunning(value) { running = value; updateControls(); }
+function renderRuns() {
+  $('runs').replaceChildren();
+  for (const run of runs) {
+    const button = document.createElement('button'); button.className = 'run-item';
+    button.setAttribute('aria-pressed', run === selectedRun ? 'true' : 'false');
+    const title = document.createElement('strong'); title.textContent = `第 ${run.number} 次 · ${{complete:'完成', error:'失败', stopped:'已停止'}[run.record.outcome] || '接收中'}`;
+    const meta = document.createElement('span'); meta.textContent = `HTTP ${run.record.response?.status ?? '—'} · ${time(run.record.duration)}`;
+    const preview = document.createElement('span'); preview.className = 'run-preview'; preview.textContent = run.output.answer || run.output.reasoning || (run.toolCalls.length ? `${run.toolCalls.length} 个工具调用` : run.record.error || '未返回文本');
+    button.append(title, meta, preview); button.disabled = running || !!batchController;
+    button.onclick = () => { if (running || batchController) return; selectedRun = run; showRun(run); renderRuns(); updateControls(); };
+    $('runs').append(button);
+  }
+}
+function showRun(run) {
+  reset(); record = structuredClone(run.record);
+  for (const kind of ['reasoning', 'answer']) { output[kind] = run.output[kind]; appendOutput(kind, output[kind]); }
+  toolCalls.calls = structuredClone(run.toolCalls);
+  for (const call of toolCalls.calls) { renderToolCall(call); output[call.key] = call.arguments; appendOutput(call.key, call.arguments); }
+  $('metric-http').textContent = record.response?.status ?? '—';
+  $('metric-event').textContent = record.firstEvent === null ? '—' : time(record.firstEvent);
+  $('metric-text').textContent = record.firstText === null ? '—' : time(record.firstText);
+  $('metric-total').textContent = time(record.duration); $('metric-events').textContent = record.eventCount; $('raw-count').textContent = record.eventCount;
+  for (const event of record.events) renderEvent(event);
+  $('inspect-raw').textContent = record.raw + (record.rawTruncated ? '\n[原始响应已截断]' : '');
+  $('inspect-response-headers').textContent = Object.entries(record.response?.headers || {}).map(([k,v]) => `${k}: ${Array.isArray(v) ? v.join('\n') : v}`).join('\n');
+  $('connection-info').textContent = `第 ${run.number} 次 · ${run.record.startedAt}`;
+  if (record.usage) $('usage').textContent = Object.entries(record.usage).filter(([,v]) => typeof v === 'number').map(([k,v]) => `${k}: ${v}`).join(' · ');
+  message(run.message, run.messageError); status(record.outcome === 'complete' ? '接收完成' : record.outcome === 'stopped' ? '已停止' : '请求失败', record.outcome === 'error' ? 'error' : '');
+}
+function validateRequest(config) {
+  const url = new URL(config.url); if (!['http:', 'https:'].includes(url.protocol)) throw Error('URL 必须以 http:// 或 https:// 开头');
+  if (['GET', 'HEAD'].includes(config.method) && config.body) throw Error('GET / HEAD 请求请清空 Body');
+  if (/json/i.test(config.headers.find(h => h.enabled && h.name.toLowerCase() === 'content-type')?.value || '') && config.body) JSON.parse(config.body);
+}
+async function executeRequests(config, count = Number($('repeat-count').value)) {
+  if (running || batchController) return;
+  try { validateCount(count); validateRequest(config); } catch (e) { message(e.message, true); return; }
+  const batch = batchController = new AbortController(); updateControls(); let completed = 0;
+  try {
+    await runRepeated(config, count, async request => { const result = await send(request); completed++; return result; }, { signal: batch.signal, onProgress: (index,total) => $('batch-status').textContent = `正在执行 ${index} / ${total}` });
+  } catch (e) { message(e.message, true); }
+  finally { batchController = null; $('batch-status').textContent = `${batch.signal.aborted ? '已停止' : '执行结束'} · ${completed} / ${count}`; renderRuns(); updateControls(); }
+}
+
 async function send(config) {
   if (running) return;
   try {
@@ -245,13 +318,25 @@ async function send(config) {
     controller.abort(); record.duration = performance.now() - startTime;
     if (e.name === 'AbortError') { record.outcome = 'stopped'; status('已停止'); message('请求已停止；已接收的文本将继续逐字显示。'); }
     else { record.outcome = 'error'; record.error = e.message; status('请求失败', 'error'); message(e.message, true); }
-  } finally { clearInterval(clockTimer); $('metric-total').textContent = time(record.duration); setRunning(false); for (const call of toolCalls.snapshot()) renderToolCall(call); controller = null; }
+  } finally {
+    clearInterval(clockTimer); $('metric-total').textContent = time(record.duration); setRunning(false);
+    for (const call of toolCalls.snapshot()) renderToolCall(call); controller = null;
+    const run = { number: ++runSequence, config: structuredClone(config), record: structuredClone(record), output: { reasoning: output.reasoning, answer: output.answer }, toolCalls: toolCalls.snapshot(), message: $('message').textContent, messageError: $('message').classList.contains('error') };
+    runs.push(run); if (runs.length > 100) runs.shift(); selectedRun = run; renderRuns(); updateControls();
+  }
+  return selectedRun;
 }
-$('send').onclick = () => send(getConfig()); $('stop').onclick = () => controller?.abort();
-document.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !document.querySelector('dialog[open]')) { event.preventDefault(); send(getConfig()); } });
+$('send').onclick = () => executeRequests(getConfig());
+$('stop').onclick = () => { batchController?.abort(); controller?.abort(); };
+$('continue').onclick = () => {
+  if (running || batchController) return;
+  try { const config = appendAnswer(selectedRun.config, selectedRun); applyConfig(config); executeRequests(config, 1); }
+  catch (e) { message(e.message, true); }
+};
+document.addEventListener('keydown', event => { if (!event.isComposing && (event.metaKey || event.ctrlKey) && event.key === 'Enter' && !document.querySelector('dialog[open]')) { event.preventDefault(); executeRequests(getConfig()); } });
 $('demo').onclick = () => {
   const config = { ...initial, url: `${location.origin}/api/demo`, headers: [{ name: 'Content-Type', value: 'application/json', enabled: true }], body: JSON.stringify({ demo: true, stream: true }, null, 2) };
-  applyConfig(config); send(config);
+  applyConfig(config); executeRequests(config);
 };
 $('export-record').onclick = () => {
   if (!record) { toast('请先发送请求'); return; }
@@ -260,4 +345,7 @@ $('export-record').onclick = () => {
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = `sse-debug-${new Date().toISOString().replace(/[:.]/g,'-')}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); toast('记录已导出，原始响应可能包含业务数据');
 };
-applyConfig(initial); loadProfiles();
+// Enable controls only after their event handlers have been installed.
+for (const button of document.querySelectorAll('button')) button.disabled = false;
+$('save-profile').disabled = true; $('delete-profile').disabled = true;
+applyConfig(initial); updateControls(); loadProfiles();

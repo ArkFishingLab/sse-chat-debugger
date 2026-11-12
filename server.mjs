@@ -9,7 +9,7 @@ import { getProfileStore, ProfileError } from './profiles.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const MAX_REQUEST = 2 * 1024 * 1024;
-const assets = { '/': ['index.html', 'text/html'], '/app.mjs': ['app.mjs', 'text/javascript'], '/core.mjs': ['core.mjs', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
+const assets = { '/': ['index.html', 'text/html'], '/app.mjs': ['app.mjs', 'text/javascript'], '/core.mjs': ['core.mjs', 'text/javascript'], '/workflows.mjs': ['workflows.mjs', 'text/javascript'], '/json-view.mjs': ['json-view.mjs', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
 const forbiddenHeaders = new Set(['host', 'content-length', 'connection', 'transfer-encoding', 'upgrade', 'keep-alive', 'proxy-connection', 'te', 'trailer']);
 
 function json(res, status, value) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(value)); }

@@ -1,0 +1,4 @@
+{
+  "ownership": {"Select/Listbox": "native"},
+  "commands": {"test":"npm test"}
+}

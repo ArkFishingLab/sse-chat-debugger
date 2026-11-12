@@ -30,6 +30,12 @@ The web interface currently uses Chinese labels. The corresponding labels are in
 
 Legacy browser profiles are automatically imported when you visit their original browser and address. The browser copy is retained as a backup. Previously redacted fields cannot be recovered: fill them in and save again. Imports do not overwrite existing local profiles.
 
+## Repeated runs, continuation, and JSON view
+
+- **Repeated runs:** Set **Execution count (执行次数)** to 1–100, then send. Attempts run sequentially using independent copies of the same request captured when you click. API failures are retained and subsequent attempts continue. **Stop (停止)** aborts the current request and cancels queued attempts. The current stream is displayed while a batch runs. After completion or cancellation, choose a run to inspect its reasoning, answer, tools, raw response, events, and timing. The latest 100 runs remain in page memory only; refreshing clears them without changing saved request profiles.
+- **Append result and run (追加结果并执行):** Select a completed run containing an answer, then click the separate button. Its answer is appended as an assistant message to that run's original `messages` or Responses `input`. String `input` is converted into a message array. The body editor is updated and one request is sent, preserving other parameters and headers. Saved profiles are unchanged. Reasoning and tool arguments are not appended; tools are never executed. Unsupported body structures show an error without sending a request.
+- **JSON view (JSON 视图):** Switch between the raw body editor and a read-only JSON tree. Expand or collapse individual objects and arrays, or use the expand/collapse-all controls. Viewing JSON does not change the original request bytes. Invalid JSON remains editable in the raw view. Very deep or large trees can be inspected incrementally.
+
 ## Response parsing
 
 - **Chat Completions:** `choices[0].delta.reasoning_content` / `reasoning` and `choices[0].delta.content`.
@@ -55,10 +61,11 @@ The SSE parser handles UTF-8, events split across network chunks, CR/LF/CRLF lin
 ## Tests
 
 ```bash
+npm ci
 npm test
 ```
 
-Tests cover curl import/export round trips, SSE chunk boundaries, protocol mappings, fragmented tool arguments, parallel calls, full-fidelity file storage, access across ports, legacy imports, protection of damaged files, and real local HTTP proxy behavior, including compressed responses, waiting without a request deadline, cancellation, redirects, and errors.
+jsdom is a development-only dependency for DOM integration tests; running the tool itself still requires no dependency installation. Tests cover repeated runs and cancellation, run history selection, answer continuation, JSON trees, curl import/export round trips, SSE chunk boundaries, protocol mappings, fragmented tool arguments, parallel calls, full-fidelity file storage, access across ports, legacy imports, protection of damaged files, and real local HTTP proxy behavior, including compressed responses, waiting without a request deadline, cancellation, redirects, and errors.
 
 Project files:
 

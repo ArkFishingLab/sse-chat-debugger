@@ -60,6 +60,7 @@ test('browser cancellation disconnects the upstream', async t => {
 });
 test('static page is served with local CSP and the demo can run through the proxy', async t => {
   const base = await serve(createApp(), t); const page = await fetch(base); assert.equal(page.status, 200); assert.match(page.headers.get('content-security-policy'), /default-src 'self'/); assert.match(await page.text(), /流式调试台/);
+  for (const module of ['/app.mjs', '/workflows.mjs', '/json-view.mjs']) assert.equal((await fetch(base + module)).status, 200);
   const response = await request(base, { url: base + '/api/demo' }); const items = (await response.text()).trim().split('\n').map(JSON.parse);
   assert.equal(items[0].status, 200); assert.match(items.filter(i => i.type === 'chunk').map(i => i.text).join(''), /\[DONE\]/); assert.equal(items.at(-1).type, 'done');
   const calls = new ToolCallAccumulator(), parser = new SSEParser(event => { if (event.hasData && event.data !== '[DONE]') calls.push(JSON.parse(event.data)); });

@@ -4,8 +4,19 @@
   "private": true,
   "description": "Local SSE chat debugger with curl import, reasoning and answer streaming, and raw event inspection.",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/ArkFishingLab/sse-chat-debugger.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ArkFishingLab/sse-chat-debugger.git"
+  },
   "type": "module",
-  "scripts": { "start": "node server.mjs", "test": "node --test test/*.test.mjs" },
-  "engines": { "node": ">=20" }
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
 }
