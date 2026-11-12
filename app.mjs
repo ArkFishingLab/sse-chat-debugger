@@ -1,4 +1,4 @@
-import { appendAnswer, runRepeated, validateCount } from './workflows.mjs';
+import { appendResult, canAppendResult, runRepeated, validateCount } from './workflows.mjs';
 import { renderJSONView } from './json-view.mjs';
 import { parseCurl, toCurl, SSEParser, extractText, ToolCallAccumulator, isSensitive, redactURL } from './core.mjs';
 const $ = id => document.getElementById(id);
@@ -202,6 +202,12 @@ function handleEvent(event, at, config) {
         note = '接口返回错误事件'; record.apiError = true; message(JSON.stringify(obj.error || obj.response?.error || obj), true); status('接口错误', 'error');
       }
       if (record.response?.status >= 200 && record.response?.status < 300) {
+        if (Array.isArray(obj.response?.output)) record.responseOutput = structuredClone(obj.response.output);
+        if (obj.type === 'response.output_item.done' && obj.item && Number.isInteger(obj.output_index)) {
+          record.responseOutputItems ??= {};
+          record.responseOutputItems[obj.output_index] = structuredClone(obj.item);
+        }
+
         const { reasoning, answer } = extractText(obj, event.event, { reasoning: config.reasoningPath, answer: config.answerPath });
         receiveText('reasoning', reasoning, at); receiveText('answer', answer, at);
         const updates = toolCalls.push(obj);
@@ -225,7 +231,7 @@ function updateControls() {
   const busy = running || !!batchController;
   for (const id of ['send', 'clear', 'demo', 'repeat-count']) $(id).disabled = busy;
   $('stop').disabled = !busy;
-  $('continue').disabled = busy || !selectedRun || selectedRun.record.outcome !== 'complete' || !selectedRun.output.answer.trim();
+  $('continue').disabled = busy || !canAppendResult(selectedRun);
   $('runs').querySelectorAll('button').forEach(button => button.disabled = busy);
 }
 function setRunning(value) { running = value; updateControls(); }
@@ -330,7 +336,7 @@ $('send').onclick = () => executeRequests(getConfig());
 $('stop').onclick = () => { batchController?.abort(); controller?.abort(); };
 $('continue').onclick = () => {
   if (running || batchController) return;
-  try { const config = appendAnswer(selectedRun.config, selectedRun); applyConfig(config); executeRequests(config, 1); }
+  try { const config = appendResult(getConfig(), selectedRun); applyConfig(config); document.querySelector('[data-editor="body"]').click(); toast('结果已追加到当前 Body，检查或编辑后点击发送请求'); }
   catch (e) { message(e.message, true); }
 };
 document.addEventListener('keydown', event => { if (!event.isComposing && (event.metaKey || event.ctrlKey) && event.key === 'Enter' && !document.querySelector('dialog[open]')) { event.preventDefault(); executeRequests(getConfig()); } });
